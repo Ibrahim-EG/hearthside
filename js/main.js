@@ -6,6 +6,9 @@
   const boot = document.getElementById('boot');
   const ART = {}, CLOUDS = [];
   let SCALE = 1, OX = 0, OY = 0;
+  
+  // THE NERVOUS SYSTEM: App state
+  const STATE = { fire: 'dead', satchel: 'closed' };
 
   function resize() {
     const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
@@ -23,7 +26,6 @@
     c.getContext('2d').drawImage(im, 0, 0);
     return c;
   }
-  // chroma-key the magenta backing out, with soft edges + despill
   function keyMagenta(im) {
     const c = px(im), x = c.getContext('2d');
     const d = x.getImageData(0, 0, c.width, c.height), p = d.data;
@@ -37,7 +39,6 @@
     x.putImageData(d, 0, 0);
     return c;
   }
-  // crop transparent margins so config rects refer to painted content only
   function trim(c) {
     const x = c.getContext('2d');
     const d = x.getImageData(0, 0, c.width, c.height).data;
@@ -72,7 +73,6 @@
     return trim(r);
   }
 
-  const missing = [];
   function load(name) {
     return new Promise(res => {
       const im = new Image();
@@ -84,7 +84,7 @@
         else ART[name] = trim(c);
         res();
       };
-      im.onerror = () => { missing.push(CFG.FILES[name]); res(); };
+      im.onerror = () => { res(); };
       im.src = CFG.ASSET_DIR + CFG.FILES[name];
     });
   }
@@ -101,11 +101,11 @@
   function render() {
     ctx.setTransform(SCALE, 0, 0, SCALE, OX, OY);
     const vx0 = -OX / SCALE, vy0 = -OY / SCALE, vw = canvas.width / SCALE, vh = canvas.height / SCALE;
-    // LIGHT (code's job): sky
+    
     const g = ctx.createLinearGradient(0, vy0, 0, vy0 + vh);
     for (const s of CFG.SKY) g.addColorStop(s[0], s[1]);
     ctx.fillStyle = g; ctx.fillRect(vx0, vy0, vw, vh);
-    // LIGHT: sun glow, then painted sun disc
+    
     const S = CFG.SUN, cx = S.x + S.w / 2, cy = S.y + S.w / 2;
     ctx.globalCompositeOperation = 'lighter';
     const rg = ctx.createRadialGradient(cx, cy, 4, cx, cy, S.glowR);
@@ -114,10 +114,20 @@
     ctx.fillStyle = rg; ctx.fillRect(cx - S.glowR, cy - S.glowR, S.glowR * 2, S.glowR * 2);
     ctx.globalCompositeOperation = 'source-over';
     drawArt(ART.sun, S, 1, false);
+    
     for (const c of CFG.CLOUDS) drawArt(CLOUDS[c.row], c, c.alpha, false);
-    // PAINT (the contract): every object is a painted layer
-    for (const L of CFG.LAYERS) drawArt(ART[L.art], L, L.alpha, L.add);
-    // LIGHT: warm grade + vignette
+    
+    for (const L of CFG.LAYERS) {
+      if (L.state) {
+        if (L.state === 'fire_dead' && STATE.fire !== 'dead') continue;
+        if (L.state === 'fire_ember' && STATE.fire !== 'ember') continue;
+        if (L.state === 'fire_small' && STATE.fire !== 'small') continue;
+        if (L.state === 'satchel_closed' && STATE.satchel !== 'closed') continue;
+        if (L.state === 'satchel_open' && STATE.satchel !== 'open') continue;
+      }
+      drawArt(ART[L.art], L, L.alpha, L.add);
+    }
+    
     ctx.globalCompositeOperation = 'overlay';
     ctx.fillStyle = CFG.GRADE.warm; ctx.fillRect(vx0, vy0, vw, vh);
     ctx.globalCompositeOperation = 'source-over';
@@ -126,21 +136,49 @@
     ctx.fillStyle = vg; ctx.fillRect(vx0, vy0, vw, vh);
   }
 
-  // 24 fps cap: the painted, stop-motion pulse + battery saver
   let last = 0, acc = 0;
   const FRAME = 1000 / CFG.FPS;
   function tick(t) {
     requestAnimationFrame(tick);
-    if (!last) last = t;
-    acc += t - last; last = t;
+    if (!last) { last = t; return; }
+    const dt = Math.min((t - last) / 1000, 0.1);
+    acc += t - last; 
+    last = t;
+    
+    // THE MUSCLE: Animate clouds
+    for (const c of CFG.CLOUDS) {
+      c.x += (c.speed || 5) * dt;
+      if (c.x > CFG.VW) c.x = -c.w;
+    }
+    
     if (acc < FRAME) return;
     acc %= FRAME;
     render();
   }
 
+  // THE NERVOUS SYSTEM: Touch interactions
+  canvas.addEventListener('pointerdown', (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const px = (e.clientX - rect.left) / rect.width * canvas.width;
+    const py = (e.clientY - rect.top) / rect.height * canvas.height;
+    const vx = (px - OX) / SCALE;
+    const vy = (py - OY) / SCALE;
+
+    for (const h of CFG.HITBOXES) {
+      if (vx >= h.x && vx <= h.x + h.w && vy >= h.y && vy <= h.y + h.h) {
+        if (h.id === 'ring') {
+          STATE.fire = STATE.fire === 'dead' ? 'small' : (STATE.fire === 'small' ? 'ember' : 'dead');
+        } else if (h.id === 'satchel') {
+          STATE.satchel = STATE.satchel === 'closed' ? 'open' : 'closed';
+        } else if (h.id === 'wood') {
+          console.log('tapped wood'); // Log throw animation comes next
+        }
+      }
+    }
+  });
+
   resize();
   Promise.all(Object.keys(CFG.FILES).map(load)).then(() => {
-    if (missing.length) { boot.textContent = 'missing files: ' + missing.join(', '); return; }
     boot.classList.add('gone');
     requestAnimationFrame(tick);
   });
