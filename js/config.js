@@ -1,7 +1,7 @@
 window.CONFIG = {
   FPS: 24,
   VW: 1600, VH: 900,          // virtual scene space; canvas cover-fits it
-  ASSET_DIR: 'assets/',
+  ASSET_DIR: '',
 
   // sunset sky, top→bottom (Phase 2 keys this to your real clock)
   SKY: [
