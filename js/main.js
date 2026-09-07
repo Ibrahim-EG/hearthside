@@ -5,10 +5,11 @@
   const ctx = canvas.getContext('2d');
   const boot = document.getElementById('boot');
   const ART = {}, CLOUDS = [];
-  let SCALE = 1, OX = 0, OY = 0;
-  
-  // THE NERVOUS SYSTEM: App state
-  const STATE = { fire: 'dead', satchel: 'closed' };
+  let SCALE = 1, OX = 0, OY = 0, T = 0;
+  const STATE = { fire: 'dead', satchel: 'closed', logs: 0, thrown: null };
+  const LOG_SLOTS = [
+    { dx: -35, dy: 6, rot: -0.45 }, { dx: 30, dy: -2, rot: 0.4 }, { dx: -2, dy: 16, rot: 0.08 }
+  ];
 
   function resize() {
     const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
@@ -26,16 +27,30 @@
     c.getContext('2d').drawImage(im, 0, 0);
     return c;
   }
+  function crop(c, f) {
+    const x = Math.floor(c.width * f[0]), y = Math.floor(c.height * f[1]);
+    const w = Math.floor(c.width * (1 - f[0] - f[2])), h = Math.floor(c.height * (1 - f[1] - f[3]));
+    const r = document.createElement('canvas'); r.width = w; r.height = h;
+    r.getContext('2d').drawImage(c, x, y, w, h, 0, 0, w, h);
+    return r;
+  }
   function keyMagenta(im) {
     const c = px(im), x = c.getContext('2d');
     const d = x.getImageData(0, 0, c.width, c.height), p = d.data;
     for (let i = 0; i < p.length; i += 4) {
       const r = p[i], g = p[i + 1], b = p[i + 2];
       const m = Math.min(r, b) - g;
-      if (m > 24) { const s = Math.min(m, 90) * 0.5; p[i] = Math.max(0, r - s); p[i + 2] = Math.max(0, b - s); }
-      if (m > 60) p[i + 3] = 0;
-      else if (m > 28) p[i + 3] = Math.round(p[i + 3] * (1 - (m - 28) / 32));
+      if (m > 0) { p[i] = Math.max(0, r - m); p[i + 2] = Math.max(0, b - m); } // full despill
+      if (m > 55) p[i + 3] = 0;
+      else if (m > 25) p[i + 3] = Math.round(p[i + 3] * (1 - (m - 25) / 30));
     }
+    x.putImageData(d, 0, 0);
+    return c;
+  }
+  function keyBlack(c) { // black bg -> transparent, brightness = alpha
+    const x = c.getContext('2d');
+    const d = x.getImageData(0, 0, c.width, c.height), p = d.data;
+    for (let i = 0; i < p.length; i += 4) p[i + 3] = Math.max(p[i], p[i + 1], p[i + 2]);
     x.putImageData(d, 0, 0);
     return c;
   }
@@ -77,57 +92,100 @@
     return new Promise(res => {
       const im = new Image();
       im.onload = () => {
-        const c = CFG.MAGENTA.includes(name) ? keyMagenta(im) : px(im);
+        let c = px(im);
+        if (CFG.CROPS[name]) c = crop(c, CFG.CROPS[name]);
+        if (CFG.MAGENTA.includes(name)) c = keyMagenta(c);
+        if (CFG.BLACK.includes(name)) c = keyBlack(c);
         if (name === 'clouds') sliceRows(c, 3).forEach((r, i) => CLOUDS[i] = r);
         else if (name === 'sun_moon') { ART.sun = sliceHalf(c, 0); ART.moon = sliceHalf(c, 1); }
         else if (name === 'wood') { ART.wood_pile = sliceHalf(c, 0); ART.wood_log = sliceHalf(c, 1); }
         else ART[name] = trim(c);
         res();
       };
-      im.onerror = () => { res(); };
+      im.onerror = () => res();
       im.src = CFG.ASSET_DIR + CFG.FILES[name];
     });
   }
 
-  function drawArt(a, r, alpha, add) {
+  function drawArt(a, r, alpha, comp) {
     if (!a) return;
     const h = r.w * a.height / a.width;
     ctx.globalAlpha = alpha == null ? 1 : alpha;
-    ctx.globalCompositeOperation = add ? 'lighter' : 'source-over';
+    ctx.globalCompositeOperation = comp || 'source-over';
     ctx.drawImage(a, r.x, r.y, r.w, h);
     ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
+  }
+  function drawLog(x, y, w, rot, alpha) {
+    const a = ART.wood_log; if (!a) return;
+    const h = w * a.height / a.width;
+    ctx.save(); ctx.translate(x, y); ctx.rotate(rot);
+    ctx.globalAlpha = alpha == null ? 1 : alpha;
+    ctx.drawImage(a, -w / 2, -h / 2, w, h);
+    ctx.restore(); ctx.globalAlpha = 1;
   }
 
   function render() {
     ctx.setTransform(SCALE, 0, 0, SCALE, OX, OY);
     const vx0 = -OX / SCALE, vy0 = -OY / SCALE, vw = canvas.width / SCALE, vh = canvas.height / SCALE;
-    
+
     const g = ctx.createLinearGradient(0, vy0, 0, vy0 + vh);
     for (const s of CFG.SKY) g.addColorStop(s[0], s[1]);
     ctx.fillStyle = g; ctx.fillRect(vx0, vy0, vw, vh);
-    
-    const S = CFG.SUN, cx = S.x + S.w / 2, cy = S.y + S.w / 2;
-    ctx.globalCompositeOperation = 'lighter';
-    const rg = ctx.createRadialGradient(cx, cy, 4, cx, cy, S.glowR);
-    rg.addColorStop(0, 'rgba(255,214,140,' + S.glowA + ')');
-    rg.addColorStop(1, 'rgba(255,160,60,0)');
-    ctx.fillStyle = rg; ctx.fillRect(cx - S.glowR, cy - S.glowR, S.glowR * 2, S.glowR * 2);
-    ctx.globalCompositeOperation = 'source-over';
-    drawArt(ART.sun, S, 1, false);
-    
-    for (const c of CFG.CLOUDS) drawArt(CLOUDS[c.row], c, c.alpha, false);
-    
+
     for (const L of CFG.LAYERS) {
       if (L.state) {
         if (L.state === 'fire_dead' && STATE.fire !== 'dead') continue;
-        if (L.state === 'fire_ember' && STATE.fire !== 'ember') continue;
         if (L.state === 'fire_small' && STATE.fire !== 'small') continue;
+        if (L.state === 'fire_ember' && STATE.fire !== 'ember') continue;
         if (L.state === 'satchel_closed' && STATE.satchel !== 'closed') continue;
         if (L.state === 'satchel_open' && STATE.satchel !== 'open') continue;
       }
-      drawArt(ART[L.art], L, L.alpha, L.add);
+      if (L.art === 'mountains') {           // painted sky panel first
+        drawArt(ART.mountains, L);
+        const S = CFG.SUN, cx = S.x + S.w / 2, cy = S.y + S.w / 2;
+        ctx.globalCompositeOperation = 'lighter';
+        const rg = ctx.createRadialGradient(cx, cy, 4, cx, cy, S.glowR);
+        rg.addColorStop(0, 'rgba(255,214,140,' + S.glowA + ')');
+        rg.addColorStop(1, 'rgba(255,160,60,0)');
+        ctx.fillStyle = rg; ctx.fillRect(cx - S.glowR, cy - S.glowR, S.glowR * 2, S.glowR * 2);
+        ctx.globalCompositeOperation = 'source-over';
+        drawArt(ART.sun, S, 1);
+        for (const c of CFG.CLOUDS) drawArt(CLOUDS[c.row], c, c.alpha);
+        continue;
+      }
+      drawArt(ART[L.art], L, L.alpha);
+      if (L.art === 'ring_dead' && STATE.fire === 'dead') {
+        for (let i = 0; i < STATE.logs; i++) {
+          const s = LOG_SLOTS[i];
+          drawLog(L.x + L.w / 2 + s.dx, L.y + 120 + s.dy, 150, s.rot);
+        }
+        if (STATE.thrown) {
+          const t = Math.min(1, (T - STATE.thrown.t0) / 0.6);
+          const fx = STATE.thrown.fx, fy = STATE.thrown.fy;
+          const tx = L.x + L.w / 2, ty = L.y + 100;
+          const mx = (fx + tx) / 2, my = Math.min(fy, ty) - 220;
+          const u = 1 - t;
+          const x = u * u * fx + 2 * u * t * mx + t * t * tx;
+          const y = u * u * fy + 2 * u * t * my + t * t * ty;
+          drawLog(x, y, 150, -1.2 + t * 1.6);
+        }
+      }
+      if (L.art === 'ring_small' || L.art === 'ring_ember') {
+        if ((L.art === 'ring_small' && STATE.fire === 'small') ||
+            (L.art === 'ring_ember' && STATE.fire === 'ember')) {
+          const base = STATE.fire === 'small' ? 0.28 : 0.14;
+          const fl = base * (0.85 + 0.12 * Math.sin(T * 9) + 0.05 * Math.sin(T * 23));
+          const cx = L.x + L.w / 2, cy = L.y + 110;
+          ctx.globalCompositeOperation = 'lighter';
+          const fg = ctx.createRadialGradient(cx, cy, 10, cx, cy, 420);
+          fg.addColorStop(0, 'rgba(255,170,70,' + fl + ')');
+          fg.addColorStop(1, 'rgba(255,120,40,0)');
+          ctx.fillStyle = fg; ctx.fillRect(cx - 420, cy - 420, 840, 840);
+          ctx.globalCompositeOperation = 'source-over';
+        }
+      }
     }
-    
+
     ctx.globalCompositeOperation = 'overlay';
     ctx.fillStyle = CFG.GRADE.warm; ctx.fillRect(vx0, vy0, vw, vh);
     ctx.globalCompositeOperation = 'source-over';
@@ -142,38 +200,33 @@
     requestAnimationFrame(tick);
     if (!last) { last = t; return; }
     const dt = Math.min((t - last) / 1000, 0.1);
-    acc += t - last; 
-    last = t;
-    
-    // THE MUSCLE: Animate clouds
-    for (const c of CFG.CLOUDS) {
-      c.x += (c.speed || 5) * dt;
-      if (c.x > CFG.VW) c.x = -c.w;
+    acc += t - last; last = t; T += dt;
+    for (const c of CFG.CLOUDS) { c.x += (c.speed || 5) * dt; if (c.x > CFG.VW) c.x = -c.w; }
+    if (STATE.thrown && T - STATE.thrown.t0 > 0.6) {
+      STATE.logs = Math.min(3, STATE.logs + 1); STATE.thrown = null;
     }
-    
     if (acc < FRAME) return;
     acc %= FRAME;
     render();
   }
 
-  // THE NERVOUS SYSTEM: Touch interactions
   canvas.addEventListener('pointerdown', (e) => {
     const rect = canvas.getBoundingClientRect();
-    const px = (e.clientX - rect.left) / rect.width * canvas.width;
-    const py = (e.clientY - rect.top) / rect.height * canvas.height;
-    const vx = (px - OX) / SCALE;
-    const vy = (py - OY) / SCALE;
-
+    const vx = ((e.clientX - rect.left) / rect.width * canvas.width - OX) / SCALE;
+    const vy = ((e.clientY - rect.top) / rect.height * canvas.height - OY) / SCALE;
     for (const h of CFG.HITBOXES) {
-      if (vx >= h.x && vx <= h.x + h.w && vy >= h.y && vy <= h.y + h.h) {
-        if (h.id === 'ring') {
-          STATE.fire = STATE.fire === 'dead' ? 'small' : (STATE.fire === 'small' ? 'ember' : 'dead');
-        } else if (h.id === 'satchel') {
-          STATE.satchel = STATE.satchel === 'closed' ? 'open' : 'closed';
-        } else if (h.id === 'wood') {
-          console.log('tapped wood'); // Log throw animation comes next
-        }
+      if (vx < h.x || vx > h.x + h.w || vy < h.y || vy > h.y + h.h) continue;
+      if (h.id === 'wood') {
+        if (STATE.logs < 3 && !STATE.thrown && STATE.fire === 'dead')
+          STATE.thrown = { t0: T, fx: h.x + h.w / 2, fy: h.y + 60 };
+      } else if (h.id === 'ring') {
+        if (STATE.fire === 'dead' && STATE.logs > 0) STATE.fire = 'small';
+        else if (STATE.fire === 'small') STATE.fire = 'ember';
+        else if (STATE.fire === 'ember') { STATE.fire = 'dead'; STATE.logs = 0; }
+      } else if (h.id === 'satchel') {
+        STATE.satchel = STATE.satchel === 'closed' ? 'open' : 'closed';
       }
+      break;
     }
   });
 
