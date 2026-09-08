@@ -23,7 +23,7 @@
 
   function px(im) {
     const c = document.createElement('canvas');
-    c.width = im.naturalWidth; c.height = im.naturalHeight;
+    c.width = im.naturalWidth || im.width; c.height = im.naturalHeight || im.height;
     c.getContext('2d').drawImage(im, 0, 0);
     return c;
   }
@@ -34,20 +34,21 @@
     r.getContext('2d').drawImage(c, x, y, w, h, 0, 0, w, h);
     return r;
   }
-  function keyMagenta(im) {
-    const c = px(im), x = c.getContext('2d');
+  // operates ON a canvas (fixed: no re-wrapping)
+  function keyMagenta(c) {
+    const x = c.getContext('2d');
     const d = x.getImageData(0, 0, c.width, c.height), p = d.data;
     for (let i = 0; i < p.length; i += 4) {
       const r = p[i], g = p[i + 1], b = p[i + 2];
       const m = Math.min(r, b) - g;
-      if (m > 0) { p[i] = Math.max(0, r - m); p[i + 2] = Math.max(0, b - m); } // full despill
+      if (m > 0) { p[i] = Math.max(0, r - m); p[i + 2] = Math.max(0, b - m); }
       if (m > 55) p[i + 3] = 0;
       else if (m > 25) p[i + 3] = Math.round(p[i + 3] * (1 - (m - 25) / 30));
     }
     x.putImageData(d, 0, 0);
     return c;
   }
-  function keyBlack(c) { // black bg -> transparent, brightness = alpha
+  function keyBlack(c) {
     const x = c.getContext('2d');
     const d = x.getImageData(0, 0, c.width, c.height), p = d.data;
     for (let i = 0; i < p.length; i += 4) p[i + 3] = Math.max(p[i], p[i + 1], p[i + 2]);
@@ -92,17 +93,19 @@
     return new Promise(res => {
       const im = new Image();
       im.onload = () => {
-        let c = px(im);
-        if (CFG.CROPS[name]) c = crop(c, CFG.CROPS[name]);
-        if (CFG.MAGENTA.includes(name)) c = keyMagenta(c);
-        if (CFG.BLACK.includes(name)) c = keyBlack(c);
-        if (name === 'clouds') sliceRows(c, 3).forEach((r, i) => CLOUDS[i] = r);
-        else if (name === 'sun_moon') { ART.sun = sliceHalf(c, 0); ART.moon = sliceHalf(c, 1); }
-        else if (name === 'wood') { ART.wood_pile = sliceHalf(c, 0); ART.wood_log = sliceHalf(c, 1); }
-        else ART[name] = trim(c);
+        try {
+          let c = px(im);
+          if (CFG.CROPS[name]) c = crop(c, CFG.CROPS[name]);
+          if (CFG.MAGENTA.includes(name)) c = keyMagenta(c);
+          if (CFG.BLACK.includes(name)) c = keyBlack(c);
+          if (name === 'clouds') sliceRows(c, 3).forEach((r, i) => CLOUDS[i] = r);
+          else if (name === 'sun_moon') { ART.sun = sliceHalf(c, 0); ART.moon = sliceHalf(c, 1); }
+          else if (name === 'wood') { ART.wood_pile = sliceHalf(c, 0); ART.wood_log = sliceHalf(c, 1); }
+          else ART[name] = trim(c);
+        } catch (err) { boot.textContent = 'engine error in ' + name + ': ' + err.message; }
         res();
       };
-      im.onerror = () => res();
+      im.onerror = () => { boot.textContent = 'missing file: ' + CFG.FILES[name]; res(); };
       im.src = CFG.ASSET_DIR + CFG.FILES[name];
     });
   }
@@ -115,13 +118,12 @@
     ctx.drawImage(a, r.x, r.y, r.w, h);
     ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
   }
-  function drawLog(x, y, w, rot, alpha) {
+  function drawLog(x, y, w, rot) {
     const a = ART.wood_log; if (!a) return;
     const h = w * a.height / a.width;
     ctx.save(); ctx.translate(x, y); ctx.rotate(rot);
-    ctx.globalAlpha = alpha == null ? 1 : alpha;
     ctx.drawImage(a, -w / 2, -h / 2, w, h);
-    ctx.restore(); ctx.globalAlpha = 1;
+    ctx.restore();
   }
 
   function render() {
@@ -140,7 +142,7 @@
         if (L.state === 'satchel_closed' && STATE.satchel !== 'closed') continue;
         if (L.state === 'satchel_open' && STATE.satchel !== 'open') continue;
       }
-      if (L.art === 'mountains') {           // painted sky panel first
+      if (L.art === 'mountains') {
         drawArt(ART.mountains, L);
         const S = CFG.SUN, cx = S.x + S.w / 2, cy = S.y + S.w / 2;
         ctx.globalCompositeOperation = 'lighter';
@@ -165,24 +167,21 @@
           const tx = L.x + L.w / 2, ty = L.y + 100;
           const mx = (fx + tx) / 2, my = Math.min(fy, ty) - 220;
           const u = 1 - t;
-          const x = u * u * fx + 2 * u * t * mx + t * t * tx;
-          const y = u * u * fy + 2 * u * t * my + t * t * ty;
-          drawLog(x, y, 150, -1.2 + t * 1.6);
+          drawLog(u * u * fx + 2 * u * t * mx + t * t * tx,
+                  u * u * fy + 2 * u * t * my + t * t * ty, 150, -1.2 + t * 1.6);
         }
       }
-      if (L.art === 'ring_small' || L.art === 'ring_ember') {
-        if ((L.art === 'ring_small' && STATE.fire === 'small') ||
-            (L.art === 'ring_ember' && STATE.fire === 'ember')) {
-          const base = STATE.fire === 'small' ? 0.28 : 0.14;
-          const fl = base * (0.85 + 0.12 * Math.sin(T * 9) + 0.05 * Math.sin(T * 23));
-          const cx = L.x + L.w / 2, cy = L.y + 110;
-          ctx.globalCompositeOperation = 'lighter';
-          const fg = ctx.createRadialGradient(cx, cy, 10, cx, cy, 420);
-          fg.addColorStop(0, 'rgba(255,170,70,' + fl + ')');
-          fg.addColorStop(1, 'rgba(255,120,40,0)');
-          ctx.fillStyle = fg; ctx.fillRect(cx - 420, cy - 420, 840, 840);
-          ctx.globalCompositeOperation = 'source-over';
-        }
+      if ((L.art === 'ring_small' && STATE.fire === 'small') ||
+          (L.art === 'ring_ember' && STATE.fire === 'ember')) {
+        const base = STATE.fire === 'small' ? 0.28 : 0.14;
+        const fl = base * (0.85 + 0.12 * Math.sin(T * 9) + 0.05 * Math.sin(T * 23));
+        const cx = L.x + L.w / 2, cy = L.y + 110;
+        ctx.globalCompositeOperation = 'lighter';
+        const fg = ctx.createRadialGradient(cx, cy, 10, cx, cy, 420);
+        fg.addColorStop(0, 'rgba(255,170,70,' + fl + ')');
+        fg.addColorStop(1, 'rgba(255,120,40,0)');
+        ctx.fillStyle = fg; ctx.fillRect(cx - 420, cy - 420, 840, 840);
+        ctx.globalCompositeOperation = 'source-over';
       }
     }
 
@@ -232,7 +231,8 @@
 
   resize();
   Promise.all(Object.keys(CFG.FILES).map(load)).then(() => {
-    boot.classList.add('gone');
+    if (boot.textContent.indexOf('error') < 0 && boot.textContent.indexOf('missing') < 0)
+      boot.classList.add('gone');
     requestAnimationFrame(tick);
   });
 })();
